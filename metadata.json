@@ -1,0 +1,6 @@
+{
+  "name": "RSL Sites - Criação de Sites Profissionais",
+  "description": "Criação de sites modernos, responsivos e de alta conversão para comércios locais, empresas e autônomos. Impulsione seu negócio com a RSL Sites.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
