@@ -29,23 +29,44 @@ export function instagramURL(value) {
 export function phone(raw, country) {
   if (!raw) return '';
   let s = String(raw).trim();
-  try { if (/wa\.me|api\.whatsapp\.com/.test(s)) { const u = new URL(s); s = u.searchParams.get('phone') || u.pathname.slice(1); } } catch { return ''; }
-  s = s.split(/[;,]/)[0].replace(/[^\d+]/g, '');
+  try { if (/^https?:/i.test(s)) { const u = new URL(s); if(!['wa.me','api.whatsapp.com','web.whatsapp.com'].includes(u.hostname))return '';s = u.searchParams.get('phone') || u.pathname.slice(1); } } catch { return ''; }
+  s = s.replace(/^tel:/i,'').split(/[;,/]|\s+(?:ext\.?|ramal)\s*/i)[0].replace(/[^\d+]/g, '');
   if (s.startsWith('00')) s = s.slice(2);
   if (s.startsWith('+')) s = s.slice(1);
   if (country === 'PT' && /^\d{9}$/.test(s)) s = '351' + s;
   if (country === 'BR' && /^\d{10,11}$/.test(s)) s = '55' + s;
-  return /^(55\d{10,11}|351\d{9})$/.test(s) ? s : '';
+  if(country==='BR'&&/^0\d{10,11}$/.test(s))s=s.slice(1);
+  if(country==='BR'&&/^0\d{12,13}$/.test(s))s=s.slice(3);
+  if(country==='BR'&&/^\d{10,11}$/.test(s))s='55'+s;
+  if(country==='PT')return /^351(?:2\d{8}|9[1236]\d{7}|30\d{7})$/.test(s)?s:'';
+  if(country==='BR')return /^55[1-9]\d(?:9\d{8}|[2-5]\d{7})$/.test(s)?s:'';
+  return '';
 }
-export function makeQuery(city, segment, whatsappOnly = false) {
-  const contact = whatsappOnly ? '["contact:whatsapp"]' : '[~"^(contact:whatsapp|contact:phone|phone)$"~"."]';
-  return `[out:json][timeout:25];(${segments[segment].filters.map(f => `nwr${f}["name"][!"website"][!"contact:website"]${contact}(${cities[city].bbox});`).join('')});out tags center 60;`;
+export function phoneType(number,country){const n=phone(number,country);return !n?'invalid':country==='PT'?(/^3519[1236]/.test(n)?'mobile':'landline'):(/^55\d{2}9\d{8}$/.test(n)?'mobile':'landline');}
+export function reviewContact(lead,b,others=[]){
+ const reject=m=>{throw Object.assign(new Error(m),{status:400});};
+ const number=phone(b.phone||lead.phone,lead.country);if(!number)reject('Informe um número válido do país da empresa, com DDD ou indicativo.');
+ if(others.some(x=>x.id!==lead.id&&x.phone===number))reject('Este número já pertence a outro contato cadastrado.');
+ if(!['unknown','confirmed','unavailable'].includes(b.contactStatus))reject('Selecione o resultado da conferência.');
+ if(b.contactStatus==='confirmed'&&b.identityConfirmed!==true)reject('Confirme que a conversa abriu e pertence a esta empresa.');
+ const updated={...lead,phone:number};
+ if(number!==lead.phone){if(b.contactStatus==='confirmed')reject('Salve o número corrigido como ainda não conferido e teste a nova conversa.');updated.previousPhone=lead.phone;updated.whatsapp=false;updated.whatsappEvidence='';updated.consent=null;updated.lastInbound=null;}
+ updated.whatsappCheck={status:b.contactStatus,at:new Date().toISOString()};return updated;
+}
+export function makeQuery(city, segment, whatsappOnly = false, excludeIds=[]) {
+  const contact = whatsappOnly ? '[~"^(contact:whatsapp|whatsapp)$"~"."]' : '[~"^(contact:whatsapp|whatsapp|contact:mobile|mobile|contact:phone|phone)$"~"."]';
+  const ids=[...new Set(excludeIds)].filter(x=>/^osm-(node|way|relation)-\d+$/.test(x)).slice(-2000);
+  const omit=['node','way','relation'].map(type=>{const values=ids.filter(x=>x.startsWith('osm-'+type+'-')).map(x=>x.split('-')[2]);return values.length?`${type}(id:${values.join(',')});`:'';}).join('');
+  return `[out:json][timeout:20];(${segments[segment].filters.map(f => `nwr${f}["name"][!"website"][!"contact:website"]${contact}(${cities[city].bbox});`).join('')});${omit?`(._; - (${omit}););`:''}out tags center 60;`;
 }
 export function fromOSM(element, cityKey, segment) {
   const t = element.tags || {}, city = cities[cityKey];
-  const whatsapp = phone(t['contact:whatsapp'], city.country);
+  const values=v=>String(v||'').split(/[;,]/).map(n=>phone(n,city.country)).filter(Boolean);
+  const whatsapp = values(t['contact:whatsapp']||t.whatsapp)[0]||'';
+  const candidates=[...new Set(['contact:mobile','mobile','contact:phone','phone'].flatMap(k=>values(t[k])))];
+  const best=whatsapp||candidates.find(n=>phoneType(n,city.country)==='mobile')||candidates[0]||'';
   return { id: `osm-${element.type}-${element.id}`, name: t.name, country: city.country, city: t['addr:city'] || city.name, searchArea:city.name, segment,
-    phone: whatsapp || phone(t['contact:phone'] || t.phone, city.country), whatsapp: !!whatsapp,
+    phone: best, otherPhones:candidates.filter(n=>n!==best), whatsapp: !!whatsapp,
     whatsappEvidence: whatsapp ? `https://www.openstreetmap.org/${element.type}/${element.id}` : '',
     websiteStatus: 'not_listed', websiteEvidence: '', source: `https://www.openstreetmap.org/${element.type}/${element.id}`,
     sourceKind: 'OpenStreetMap', researchedAt: new Date().toISOString(), status: 'novo', consent: null,
@@ -72,6 +93,7 @@ export function draft(lead, profile) {
 }
 export function eligibility(lead) {
   if (lead.status === 'bloqueado') return 'Contato descadastrado; envio bloqueado.';
+  if(lead.whatsappCheck?.status==='unavailable')return 'Número marcado como sem WhatsApp. Corrija e confira o contato antes de enviar.';
   if (!lead.phone || !lead.whatsapp) return 'Confirme o número de WhatsApp e sua fonte.';
   if (!lead.consent?.evidence || !lead.consent?.at) return 'Registre a autorização recebida antes de enviar.';
   return '';

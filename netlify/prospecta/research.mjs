@@ -1,12 +1,13 @@
 import {cities,makeQuery} from './lib.mjs';
 export const providers={
  europe:{name:'Overpass Europa',url:'https://ovp.dresel.systems/api/interpreter',countries:['PT']},
+ main:{name:'Overpass OSM',url:'https://overpass-api.de/api/interpreter',countries:['BR']},
  coffee:{name:'Overpass Private.coffee',url:'https://overpass.private.coffee/api/interpreter',countries:['BR','PT']},
  vk:{name:'Overpass VK Maps',url:'https://maps.mail.ru/osm/tools/overpass/api/interpreter',countries:['BR','PT']}
 };
 const cooloffs=new Map(),cache=new Map();
-export async function research({city,segment,whatsappOnly=false},{fetchImpl=fetch,now=Date.now,timeout=16000,endpoint=process.env.OVERPASS_URL}={}){
- const key=JSON.stringify([city,segment,whatsappOnly,endpoint||'auto']);
+export async function research({city,segment,whatsappOnly=false,excludeIds=[]},{fetchImpl=fetch,now=Date.now,timeout=16000,endpoint=process.env.OVERPASS_URL}={}){
+ const key=JSON.stringify([city,segment,whatsappOnly,excludeIds,endpoint||'auto']);
  const cached=cache.get(key);if(cached&&now()-cached.at<10*60000)return {...cached.result,cached:true};
  const country=cities[city].country;
  let sources=Object.values(providers).filter(p=>p.countries.includes(country));
@@ -15,7 +16,7 @@ export async function research({city,segment,whatsappOnly=false},{fetchImpl=fetc
  for(const source of sources){
   if((cooloffs.get(source.url)||0)>now()){diagnostics.push({source:source.name,kind:'cooldown',message:'Fonte em intervalo após falha recente.'});continue;}
   try{
-   const res=await fetchImpl(source.url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json','User-Agent':'Prospecta/1.1 (+http://localhost:4317; interactive local CRM)'},body:new URLSearchParams({data:makeQuery(city,segment,whatsappOnly)}),signal:AbortSignal.timeout(timeout)});
+   const res=await fetchImpl(source.url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json','User-Agent':'Prospecta/1.1 (+http://localhost:4317; interactive local CRM)'},body:new URLSearchParams({data:makeQuery(city,segment,whatsappOnly,excludeIds)}),signal:AbortSignal.timeout(timeout)});
    if(!res.ok){cooloffs.set(source.url,now()+60000);diagnostics.push({source:source.name,kind:'http',status:res.status,message:res.status===429||res.status===406?'Fonte recusou ou limitou a consulta.':'Fonte indisponível.'});continue;}
    let data;try{data=await res.json();}catch{throw Object.assign(new Error('Fonte respondeu em formato inválido.'),{kind:'format'});}
    if(!Array.isArray(data.elements))throw Object.assign(new Error('Resposta sem lista de resultados.'),{kind:'format'});
