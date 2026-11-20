@@ -1,5 +1,5 @@
 import {randomBytes,randomUUID,createHash,createHmac,scryptSync,timingSafeEqual} from 'node:crypto';
-import {cities,segments,phone,fromOSM,analyze,draft,eligibility,instagramURL} from './lib.mjs';
+import {cities,segments,phone,fromOSM,analyze,draft,eligibility,instagramURL,phoneType,reviewContact} from './lib.mjs';
 import {research} from './research.mjs';
 
 const now=()=>new Date().toISOString();
@@ -97,10 +97,12 @@ export async function handleProspecta(request,{store,env,ip='unknown',researchIm
   if(p==='/search'&&method==='POST'){
    if(!cities[b.city]||!segments[b.segment])fail(400,'Selecione cidade e segmento válidos.');
    await mutate(store,'crm/state',empty,d=>{if(Date.now()-d.lastSearch<15000)fail(429,'Aguarde alguns segundos antes de pesquisar novamente.');d.lastSearch=Date.now();});
-   const data=await researchImpl({city:b.city,segment:b.segment,whatsappOnly:b.whatsappOnly===true},{timeout:8000});
+   const current=await read(),scope=b.city+'_'+b.segment+'_'+(b.whatsappOnly===true?'wa':b.mobileOnly===false?'all':'mobile');
+   const data=await researchImpl({city:b.city,segment:b.segment,whatsappOnly:b.whatsappOnly===true,excludeIds:[...current.leads.map(l=>l.id),...(current.searchSeen?.[scope]||[])]},{timeout:8000});
    return json(await mutate(store,'crm/state',empty,d=>{
-    let added=0,duplicates=0;for(const e of data.elements||[]){const l=fromOSM(e,b.city,b.segment);if(!l.name||!l.phone)continue;if(d.leads.some(k=>k.id===l.id||k.phone===l.phone)){duplicates++;continue;}if(d.leads.length>=2000)fail(409,'Limite de 2.000 contatos atingido. Exporte um backup antes de ampliar a base.');if(d.suppression.includes(l.phone))l.status='bloqueado';d.leads.push(l);added++;}
-    log(d,`Pesquisa em ${cities[b.city].name}: ${added} novos contatos.`);return {added,duplicates,scanned:data.elements?.length||0,source:data.source,cached:data.cached};
+    d.searchSeen||={};d.searchSeen[scope]=[...new Set([...(d.searchSeen[scope]||[]),...(data.elements||[]).map(e=>`osm-${e.type}-${e.id}`)])].slice(-2000);
+    let added=0,duplicates=0,skipped=0;for(const e of data.elements||[]){const l=fromOSM(e,b.city,b.segment);if(!l.name||!l.phone||(b.mobileOnly!==false&&!l.whatsapp&&phoneType(l.phone,l.country)!=='mobile')||(b.whatsappOnly===true&&!l.whatsapp)){skipped++;continue;}if(d.leads.some(k=>k.id===l.id||k.phone===l.phone)){duplicates++;continue;}if(d.leads.length>=2000)fail(409,'Limite de 2.000 contatos atingido. Exporte um backup antes de ampliar a base.');if(d.suppression.includes(l.phone))l.status='bloqueado';d.leads.push(l);added++;}
+    log(d,`Pesquisa em ${cities[b.city].name}: ${added} novos contatos.`);return {added,duplicates,skipped,scanned:data.elements?.length||0,source:data.source,cached:data.cached};
    }));
   }
   if(p==='/leads'&&method==='POST')return json(await mutate(store,'crm/state',empty,d=>{
@@ -110,14 +112,15 @@ export async function handleProspecta(request,{store,env,ip='unknown',researchIm
    const l={id:randomUUID(),name:clean(b.name,150),country:b.country,city:clean(b.city,100),phone:number,segment:segments[b.segment]?b.segment:'todos',source,sourceKind:'Cadastro manual',whatsapp:false,whatsappEvidence:'',websiteStatus:'not_listed',researchedAt:now(),status:d.suppression.includes(number)?'bloqueado':'novo',consent:null,facts:{description:clean(b.description,600),instagram:ig.url},notes:''};
    d.leads.push(l);log(d,`Contato cadastrado: ${l.name}.`);return l;
   }),201);
-  const match=p.match(/^\/leads\/([^/]+)(?:\/(analysis|draft|verify|consent|block|instagram))?$/);
+  const match=p.match(/^\/leads\/([^/]+)(?:\/(analysis|draft|verify|consent|block|instagram|contact))?$/);
   if(match){
    const id=decodeURIComponent(match[1]),action=match[2];
    if(method==='GET'){const d=await read(),l=d.leads.find(x=>x.id===id);if(!l)fail(404,'Lead não encontrado.');
     if(action==='analysis')return json(analyze(l));if(action==='draft')return json({text:l.draft||draft(l,d.profile),eligible:false,reason:eligibility(l),windowOpen:false});
    }else return json(await mutate(store,'crm/state',empty,d=>{
     const l=d.leads.find(x=>x.id===id);if(!l)fail(404,'Lead não encontrado.');
-    if(!action&&method==='PATCH'){
+    if(action==='contact'&&method==='POST'){const updated=reviewContact(l,b,d.leads);if(d.suppression.includes(updated.phone))updated.status='bloqueado';Object.assign(l,updated);
+    }else if(!action&&method==='PATCH'){
      if(b.notes!==undefined)l.notes=clean(b.notes,4000);if(b.draft!==undefined)l.draft=clean(b.draft,4000);
      if(['novo','analisado','proposta','ganho'].includes(b.status)&&l.status!=='bloqueado')l.status=b.status;
     }else if(action==='instagram'&&method==='POST'){const ig=instagramInput(b);l.facts={...l.facts,instagram:ig.url};l.instagramReview=ig.review;
