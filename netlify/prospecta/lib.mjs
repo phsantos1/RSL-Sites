@@ -50,7 +50,7 @@ export function reviewContact(lead,b,others=[]){
  if(!['unknown','confirmed','unavailable'].includes(b.contactStatus))reject('Selecione o resultado da conferência.');
  if(b.contactStatus==='confirmed'&&b.identityConfirmed!==true)reject('Confirme que a conversa abriu e pertence a esta empresa.');
  const updated={...lead,phone:number};
- if(number!==lead.phone){if(b.contactStatus==='confirmed')reject('Salve o número corrigido como ainda não conferido e teste a nova conversa.');updated.previousPhone=lead.phone;updated.whatsapp=false;updated.whatsappEvidence='';updated.consent=null;delete updated.lastInbound;}
+ if(number!==lead.phone){if(b.contactStatus==='confirmed')reject('Salve o número corrigido como ainda não conferido e teste a nova conversa.');updated.previousPhone=lead.phone;updated.whatsapp=false;updated.whatsappEvidence='';updated.consent=null;updated.lastInbound=null;}
  updated.whatsappCheck={status:b.contactStatus,at:new Date().toISOString()};return updated;
 }
 export function makeQuery(city, segment, whatsappOnly = false, excludeIds=[]) {
